@@ -1,49 +1,53 @@
-# ===============================================================================
-# Copyright 2017 ross
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ===============================================================================
-
-# ============= enthought library imports =======================
-# ============= standard library imports ========================
-# ============= local library imports  ==========================
 import matplotlib.pyplot as plt
 import json
-from numpy import arange, array, hstack
+from numpy import arange, array, hstack, r_, ones, hanning, convolve
 from Queue import Queue, Empty
 from threading import Thread, Event
 import requests
 import time
+from random import random
+
+NHOURS = 6
+MAX_N = int(3600*NHOURS/15.)
+DEBUG = False
+UPDATE_PERIOD = 0.5 if DEBUG else 15
 
 
-def get_update(path, host):
-    with open(path, 'a') as wfile:
-        ret = requests.get('http://{}'.format(host), timeout=10)
-        if ret.status_code == 200:
-            doc = ret.json()
-            var = doc.get('variables')
-            print '{} writing max speed={} temp={}'.format(time.time(),
-                                                           var.get('WindSpeedMax'),
-                                                           var.get('OutdoorTemperature'))
-            wfile.write(ret.text)
-            return var
-        else:
-            print 'Failed {}'.format(ret)
+def update(path):
+    if DEBUG:
+        return {'CurrentWindSpeed':random(),
+    'CurrentWindDirection':random(),
+    'CurrentWindGust':random(),
+    'OutdoorTemperature':random()}
+
+    ret = requests.get('http://192.168.0.141', timeout=10)
+    if ret.status_code==200:
+        doc = ret.json()
+        var = doc.get('variables')
+        write_to_file(path, ret)
+        return var
+    else:
+        print 'Failed {}'.format(ret)
 
 
+def write_to_file(path, ret):
+    with open(path,'a') as wfile:
+        wfile.write(ret.text)
+
+
+def write_to_db(ret):
+    
+    conn = connect('localhost', user, password, dbname)
+    cursor = conn.cursor()
+    
+    sql = 'INSERT INTO MeasurementTable'
+    cursor.execute(sql, args)
+    cursor.commit()
+    cursor.close()
+    
 def load_data(path):
     with open(path, 'r') as rfile:
-        max_gust, max_wind, min_wind, wind, outtemp, intemp = [], [], [], [], [], []
+        max_gust,max_wind,min_wind,wind, outtemp,intemp = [],[],[],[],[],[]
         for line in rfile:
             doc = json.loads(line.strip())
             var = doc.get('variables')
@@ -56,48 +60,118 @@ def load_data(path):
             intemp.append(var.get('IndoorTemperature'))
 
     return {'max_gust': array(max_gust),
-            'max_wind': array(max_wind),
-            'min_wind': array(min_wind),
-            'outtemp': array(outtemp),
-            'intemp': array(intemp),
-            'wind': array(wind)}
+    'max_wind': array(max_wind),
+    'min_wind': array(min_wind),
+    'outtemp': array(outtemp),
+    'intemp': array(intemp),
+    'wind': array(wind)}
 
 
 def plot():
-    s = plt.plot([0], [0], 'bo')[0]
-    l = plt.plot([0], [0], 'b-')[0]
-    plt.xlim(-10, 110)
+    def add_plot(ax):
+        s = ax.plot([],[],'bo', markersize=2.5)[0]
+        l = ax.plot([],[], 'b-')[0]
+        sl =ax.plot([],[])[0]
+        return l,s,sl
+        
+    f, axes = plt.subplots(4, 1, sharex=True)
+    ax1, ax2, ax3, ax4 = axes
+    windseries = add_plot(ax1)
+    dirseries = add_plot(ax2)
+    gustseries = add_plot(ax3)
+    tempseries = add_plot(ax4)
+    
+    plt.setp([ax.get_xticklabels() for ax in axes[:-1]], visible=False)
+    f.subplots_adjust(hspace=0)
+    
+    ax1.set_ylabel('Wind (kph)')
+    ax2.set_ylabel('Direction (Deg)')
+    ax3.set_ylabel('Gust (kph)')
+    ax4.set_ylabel('Temp (C)')
+    ax4.set_xlabel('time (min)')
+    
     plt.pause(0.05)
-    return l, s
+    return axes, windseries, dirseries, gustseries, tempseries
 
 
-def plot_update(path, host):
-    line, scatter = plot()
+def set_limits(d, axis, axes=None):
+    if axis=='x':
+    	if axes:
+    		func=axes.set_xlim
+    	else:
+    		func=plt.xlim
+    else:
+    	if axes:
+    		func=axes.set_ylim
+    	else:
+    		func=plt.ylim
+
+    dmi,dma = d.min(), d.max()
+    dev = (dma-dmi)*0.1
+    func(dmi-dev, dma+dev)
+
+
+def add_plot_datum(ax, datum, line, scatter, sline):
+    y = line.get_ydata()
+    y = hstack((y, (datum,)))
+    y = y[-MAX_N:]
+    x = arange(y.shape[0])*15/60.
+    
+    line.set_xdata(x)
+    line.set_ydata(y)
+    scatter.set_xdata(x)
+    scatter.set_ydata(y)
+    
+    sy = smooth(y, window_len=20)
+
+    if sy.shape == x.shape:
+        sline.set_xdata(x)
+        sline.set_ydata(sy)
+    
+    set_limits(x, 'x', axes=ax)
+    set_limits(y,'y', axes=ax)
+    
+    
+def plot_update(path):
+    axes, windseries, dirseries, gustseries, tempseries = plot()
     while 1:
-        var = get_update(path, host)
+        var = update(path)
         if var:
             wind = var.get('CurrentWindSpeed')
-            y = line.get_ydata()
-            y = hstack((y, (wind,)))
-            y = y[-100:]
-            x = arange(y.shape[0])
-
-            line.set_xdata(x)
-            line.set_ydata(y)
-            scatter.set_xdata(x)
-            scatter.set_ydata(y)
-
-            ymi, yma = y.min(), y.max()
-            d = (yma - ymi) * 0.1
-            plt.ylim(ymi - d, yma + d)
-
-        plt.pause(5)
+            temp = var.get('OutdoorTemperature')
+            gust = var.get('CurrentWindGust')
+            winddir = var.get('CurrentWindDirection')
+            print 'Current Wind={}, Dir={}, Gust={}, Temp={}'.format(wind, winddir, gust, temp)
+            
+            add_plot_datum(axes[3], temp, *tempseries)
+            add_plot_datum(axes[2], gust, *gustseries)
+            add_plot_datum(axes[1], winddir, *dirseries)
+            add_plot_datum(axes[0], wind, *windseries)
+            plt.pause(UPDATE_PERIOD)
 
 
-def run(path, host):
-    plot_update(path, host)
-
+def smooth(x, window='flat', window_len=101):
+	s=r_[x[window_len-1:0:-1],x,x[-1:-window_len:-1]]
+	if window == 'flat': #moving average
+		w=ones(window_len,'d')
+	elif window == 'hanning':
+		w= hanning(window_len)
+	y=convolve(w/w.sum(),s,mode='valid')
+	return y[(window_len/2-1):-(window_len/2)]
+	
+	
+def run(path):
+	#data=load_data(path)
+	#y = data['wind']
+	#x= arange(y.shape[0])
+	#plt.plot(x, y)
+	
+	#sy = smooth(y)
+	#sx = arange(sy.shape[0])
+	#plt.plot(sx, sy)
+	#plt.show()
+    
+    plot_update(path)
 
 if __name__ == '__main__':
-    run('ourweather.txt', '')
-# ============= EOF =============================================
+    run('ourweather2.txt')
