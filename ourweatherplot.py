@@ -6,6 +6,7 @@ from threading import Thread, Event
 import requests
 import time
 from random import random
+import math
 
 NHOURS = 6
 MAX_N = int(3600*NHOURS/15.)
@@ -74,18 +75,31 @@ def plot():
         sl =ax.plot([],[])[0]
         return l,s,sl
         
-    f, axes = plt.subplots(4, 1, sharex=True)
-    ax1, ax2, ax3, ax4 = axes
-    windseries = add_plot(ax1)
-    dirseries = add_plot(ax2)
+    def add_polar_plot(ax):
+        l = ax.plot([],[])
+        return l
+        
+    f = plt.figure()
+   
+    #f, axes = plt.subplots(4, 1, sharex=True)
+    ax2 = f.add_subplot(4,1,2)
+    ax3 = f.add_subplot(4,1,3)
+    ax4 = f.add_subplot(4,1,4)
+    
+    ax1 = f.add_subplot(4,1,1,projection='polar')
+    
+    axes = (ax1,ax2,ax3,ax4)
+    
+    windseries = add_plot(ax2)
     gustseries = add_plot(ax3)
     tempseries = add_plot(ax4)
+    dirseries = add_polar_plot(ax1)
     
     plt.setp([ax.get_xticklabels() for ax in axes[:-1]], visible=False)
-    f.subplots_adjust(hspace=0)
+    #f.subplots_adjust(hspace=0)
     
-    ax1.set_ylabel('Wind (kph)')
-    ax2.set_ylabel('Direction (Deg)')
+    ax2.set_ylabel('Wind (kph)')
+    #ax2.set_ylabel('Direction (Deg)')
     ax3.set_ylabel('Gust (kph)')
     ax4.set_ylabel('Temp (C)')
     ax4.set_xlabel('time (min)')
@@ -110,6 +124,18 @@ def set_limits(d, axis, axes=None):
     dev = (dma-dmi)*0.1
     func(dmi-dev, dma+dev)
 
+def add_polar_plot_datum(ax,datum, line):
+    datum = math.radians(datum)
+
+    theta = line.get_xdata()
+    theta = hstack((theta, (datum,)))
+    theta = theta[-MAX_N:]
+    n = theta.shape[0]
+    rad = arange(n)/float(n-1)
+    line.set_xdata(theta)
+    line.set_ydata(rad)
+    ax.set_ylim(0,1)
+    
 
 def add_plot_datum(ax, datum, line, scatter, sline):
     y = line.get_ydata()
@@ -145,8 +171,8 @@ def plot_update(path):
             
             add_plot_datum(axes[3], temp, *tempseries)
             add_plot_datum(axes[2], gust, *gustseries)
-            add_plot_datum(axes[1], winddir, *dirseries)
-            add_plot_datum(axes[0], wind, *windseries)
+            add_polar_plot_datum(axes[0], winddir, *dirseries)
+            add_plot_datum(axes[1], wind, *windseries)
             plt.pause(UPDATE_PERIOD)
 
 
